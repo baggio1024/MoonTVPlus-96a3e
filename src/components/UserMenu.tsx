@@ -76,8 +76,12 @@ export const UserMenu: React.FC = () => {
   // 订阅相关状态
   const [subscribeEnabled, setSubscribeEnabled] = useState(false);
   const [subscribeUrl, setSubscribeUrl] = useState('');
+  const [subscribeUrlWithAdFilter, setSubscribeUrlWithAdFilter] = useState('');
   const [copySuccess, setCopySuccess] = useState(false);
-  const [adFilterEnabled, setAdFilterEnabled] = useState(true); // 去广告开关，默认开启
+  const [copySuccessAdFilter, setCopySuccessAdFilter] = useState(false);
+  const [tvboxToken, setTvboxToken] = useState('');
+  const [isResettingToken, setIsResettingToken] = useState(false);
+  const [isLoadingSubscribeUrl, setIsLoadingSubscribeUrl] = useState(false);
 
   // Body 滚动锁定 - 使用 overflow 方式避免布局问题
   useEffect(() => {
@@ -304,18 +308,89 @@ export const UserMenu: React.FC = () => {
   }, []);
 
   // 懒加载订阅 URL - 只在打开订阅面板时请求
-  const fetchSubscribeUrl = async (adFilter?: boolean) => {
+  const fetchSubscribeUrl = async () => {
+    setIsLoadingSubscribeUrl(true);
     try {
-      const currentOrigin = window.location.origin;
-      const filterValue = adFilter !== undefined ? adFilter : adFilterEnabled;
-      const response = await fetch(`/api/tvbox/config?origin=${encodeURIComponent(currentOrigin)}&adFilter=${filterValue}`);
+      // 获取用户的 TVBox token
+      const response = await fetch('/api/user/tvbox-token');
       if (response.ok) {
         const data = await response.json();
-        setSubscribeUrl(data.url);
+        const token = data.token;
+        setTvboxToken(token);
+
+        // 前端拼接订阅链接
+        const currentOrigin = window.location.origin;
+        const standardUrl = `${currentOrigin}/api/tvbox/subscribe?token=${token}`;
+        const adFilterUrl = `${currentOrigin}/api/tvbox/subscribe?token=${token}&adFilter=true`;
+
+        setSubscribeUrl(standardUrl);
+        setSubscribeUrlWithAdFilter(adFilterUrl);
       }
     } catch (error) {
       console.error('获取订阅URL失败:', error);
+    } finally {
+      setIsLoadingSubscribeUrl(false);
     }
+  };
+
+  // 重置 TVBox token
+  const handleResetToken = async () => {
+    setConfirmDialog({
+      isOpen: true,
+      title: '重置订阅Token',
+      message: '确定要重置订阅token吗？重置后旧的订阅链接将失效。',
+      onConfirm: async () => {
+        setConfirmDialog({ ...confirmDialog, isOpen: false });
+        setIsResettingToken(true);
+
+        try {
+          const response = await fetch('/api/user/tvbox-token/reset', {
+            method: 'POST',
+          });
+
+          const messageEl = document.getElementById('tvbox-token-message');
+          if (response.ok) {
+            const data = await response.json();
+            const token = data.token;
+            setTvboxToken(token);
+
+            // 更新订阅链接
+            const currentOrigin = window.location.origin;
+            const standardUrl = `${currentOrigin}/api/tvbox/subscribe?token=${token}`;
+            const adFilterUrl = `${currentOrigin}/api/tvbox/subscribe?token=${token}&adFilter=true`;
+
+            setSubscribeUrl(standardUrl);
+            setSubscribeUrlWithAdFilter(adFilterUrl);
+
+            if (messageEl) {
+              messageEl.textContent = '订阅token已重置！';
+              messageEl.className = 'text-xs text-center text-green-600 dark:text-green-400 mt-2';
+              messageEl.classList.remove('hidden');
+              setTimeout(() => {
+                messageEl.classList.add('hidden');
+              }, 3000);
+            }
+          } else {
+            const data = await response.json();
+            if (messageEl) {
+              messageEl.textContent = data.error || '重置失败，请重试';
+              messageEl.className = 'text-xs text-center text-red-600 dark:text-red-400 mt-2';
+              messageEl.classList.remove('hidden');
+            }
+          }
+        } catch (error) {
+          console.error('重置token失败:', error);
+          const messageEl = document.getElementById('tvbox-token-message');
+          if (messageEl) {
+            messageEl.textContent = '重置失败，请重试';
+            messageEl.className = 'text-xs text-center text-red-600 dark:text-red-400 mt-2';
+            messageEl.classList.remove('hidden');
+          }
+        } finally {
+          setIsResettingToken(false);
+        }
+      },
+    });
   };
 
   // 获取认证信息和存储类型
@@ -726,12 +801,7 @@ export const UserMenu: React.FC = () => {
   const handleCloseSubscribe = () => {
     setIsSubscribeOpen(false);
     setCopySuccess(false);
-  };
-
-  const handleAdFilterToggle = async (checked: boolean) => {
-    setAdFilterEnabled(checked);
-    // 当去广告开关改变时,重新获取订阅URL，传入新的值
-    await fetchSubscribeUrl(checked);
+    setCopySuccessAdFilter(false);
   };
 
   const handleCopySubscribeUrl = async () => {
@@ -740,6 +810,18 @@ export const UserMenu: React.FC = () => {
       setCopySuccess(true);
       setTimeout(() => {
         setCopySuccess(false);
+      }, 2000);
+    } catch (error) {
+      console.error('复制失败:', error);
+    }
+  };
+
+  const handleCopySubscribeUrlWithAdFilter = async () => {
+    try {
+      await navigator.clipboard.writeText(subscribeUrlWithAdFilter);
+      setCopySuccessAdFilter(true);
+      setTimeout(() => {
+        setCopySuccessAdFilter(false);
       }, 2000);
     } catch (error) {
       console.error('复制失败:', error);
@@ -2527,7 +2609,7 @@ export const UserMenu: React.FC = () => {
           {/* 标题栏 */}
           <div className='flex items-center justify-between mb-6'>
             <h3 className='text-xl font-bold text-gray-800 dark:text-gray-200'>
-              订阅
+              TVBox订阅
             </h3>
             <button
               onClick={handleCloseSubscribe}
@@ -2540,58 +2622,105 @@ export const UserMenu: React.FC = () => {
 
           {/* 内容 */}
           <div className='space-y-4'>
-            {/* 去广告开关 */}
-            <div className='flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg'>
-              <div>
-                <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
-                  去广告
-                </h4>
-                <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
-                  开启后自动过滤视频广告
-                </p>
-              </div>
-              <label className='flex items-center cursor-pointer'>
-                <div className='relative'>
-                  <input
-                    type='checkbox'
-                    className='sr-only peer'
-                    checked={adFilterEnabled}
-                    onChange={(e) => handleAdFilterToggle(e.target.checked)}
-                  />
-                  <div className='w-11 h-6 bg-gray-300 rounded-full peer-checked:bg-green-500 transition-colors dark:bg-gray-600'></div>
-                  <div className='absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5'></div>
+            {isLoadingSubscribeUrl ? (
+              <>
+                {/* 加载骨架 - 订阅链接（标准） */}
+                <div>
+                  <div className='h-5 w-32 bg-gray-200 dark:bg-gray-700 rounded mb-2 animate-pulse'></div>
+                  <div className='flex gap-2'>
+                    <div className='flex-1 h-10 bg-gray-200 dark:bg-gray-700 rounded animate-pulse'></div>
+                    <div className='w-20 h-10 bg-gray-200 dark:bg-gray-700 rounded animate-pulse'></div>
+                  </div>
                 </div>
-              </label>
-            </div>
 
-            {/* TVBOX订阅 */}
-            <div>
-              <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
-                TVBOX订阅
-              </h4>
-              <div className='flex gap-2'>
-                <input
-                  type='text'
-                  className='flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 cursor-not-allowed'
-                  value={subscribeUrl}
-                  disabled
-                  readOnly
-                />
-                <button
-                  onClick={handleCopySubscribeUrl}
-                  className='px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-700 dark:hover:bg-green-600 text-white text-sm font-medium rounded-md transition-colors flex items-center gap-2'
-                >
-                  <Copy className='w-4 h-4' />
-                  {copySuccess ? '已复制' : '复制'}
-                </button>
-              </div>
-            </div>
+                {/* 加载骨架 - 订阅链接（去广告） */}
+                <div>
+                  <div className='h-5 w-36 bg-gray-200 dark:bg-gray-700 rounded mb-2 animate-pulse'></div>
+                  <div className='flex gap-2'>
+                    <div className='flex-1 h-10 bg-gray-200 dark:bg-gray-700 rounded animate-pulse'></div>
+                    <div className='w-20 h-10 bg-gray-200 dark:bg-gray-700 rounded animate-pulse'></div>
+                  </div>
+                  <div className='h-4 w-full bg-gray-200 dark:bg-gray-700 rounded mt-1 animate-pulse'></div>
+                </div>
+
+                {/* 加载骨架 - 重置按钮 */}
+                <div className='pt-2'>
+                  <div className='w-full h-10 bg-gray-200 dark:bg-gray-700 rounded animate-pulse'></div>
+                  <div className='h-4 w-40 bg-gray-200 dark:bg-gray-700 rounded mt-2 mx-auto animate-pulse'></div>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* 订阅链接（标准） */}
+                <div>
+                  <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
+                    订阅链接（标准）
+                  </h4>
+                  <div className='flex gap-2'>
+                    <input
+                      type='text'
+                      className='flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                      value={subscribeUrl}
+                      readOnly
+                    />
+                    <button
+                      onClick={handleCopySubscribeUrl}
+                      className='px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-700 dark:hover:bg-green-600 text-white text-sm font-medium rounded-md transition-colors flex items-center gap-2 whitespace-nowrap'
+                    >
+                      <Copy className='w-4 h-4' />
+                      {copySuccess ? '已复制' : '复制'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 订阅链接（去广告） */}
+                <div>
+                  <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
+                    订阅链接（去广告）
+                  </h4>
+                  <div className='flex gap-2'>
+                    <input
+                      type='text'
+                      className='flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                      value={subscribeUrlWithAdFilter}
+                      readOnly
+                    />
+                    <button
+                      onClick={handleCopySubscribeUrlWithAdFilter}
+                      className='px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-700 dark:hover:bg-green-600 text-white text-sm font-medium rounded-md transition-colors flex items-center gap-2 whitespace-nowrap'
+                    >
+                      <Copy className='w-4 h-4' />
+                      {copySuccessAdFilter ? '已复制' : '复制'}
+                    </button>
+                  </div>
+                  <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
+                    💡 去广告需要经过服务器代理，某些源可能因为区域或兼容问题无法播放
+                  </p>
+                </div>
+
+                {/* 重置Token按钮 */}
+                <div className='pt-2'>
+                  <button
+                    onClick={handleResetToken}
+                    disabled={isResettingToken}
+                    className='w-full px-4 py-2 bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600 text-white text-sm font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
+                  >
+                    {isResettingToken ? '重置中...' : '重置订阅Token'}
+                  </button>
+                  <p className='text-xs text-gray-500 dark:text-gray-400 mt-2 text-center'>
+                    ⚠️ 重置后旧链接将失效
+                  </p>
+                  {/* 消息提示 */}
+                  <p id='tvbox-token-message' className='text-xs text-center hidden'></p>
+                </div>
+              </>
+            )}
           </div>
 
           {/* 底部说明 */}
           <div className='mt-6 pt-4 border-t border-gray-200 dark:border-gray-700'>
             <p className='text-xs text-gray-500 dark:text-gray-400 text-center'>
-              将订阅链接复制到TVBOX应用中使用
+              将订阅链接复制到TVBox应用中使用
             </p>
           </div>
         </div>
